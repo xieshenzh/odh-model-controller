@@ -43,6 +43,7 @@ const (
 	inferenceServiceDeploymentModeAnnotation = "serving.kserve.io/deploymentMode"
 	KserveConfigMapName                      = "inferenceservice-config"
 	KServeWithServiceMeshComponent           = "kserve-service-mesh"
+	KServeWithNIMComponent                   = "kserve-nim"
 )
 
 func GetDeploymentModeForIsvc(ctx context.Context, cli client.Client, isvc *kservev1beta1.InferenceService) (IsvcDeploymentMode, error) {
@@ -103,37 +104,44 @@ func VerifyIfComponentIsEnabled(ctx context.Context, cli client.Client, componen
 	// there must be only one dsc
 	if len(objectList.Items) == 1 {
 		fields := []string{"spec", "components", componentName, "managementState"}
-		if componentName == KServeWithServiceMeshComponent {
+		switch componentName {
+		case KServeWithServiceMeshComponent:
 			// For KServe, Authorino is required when serving is enabled
 			// By Disabling ServiceMesh for RawDeployment, it should reflect on disabling
 			// the Authorino integration as well.
-			fields = []string{"spec", "components", "kserve", "serving", "managementState"}
-			kserveFields := []string{"spec", "components", "kserve", "managementState"}
-
-			serving, _, errServing := unstructured.NestedString(objectList.Items[0].Object, fields...)
-			if errServing != nil {
-				return false, fmt.Errorf("failed to retrieve the component [%s] status from %+v. %w",
-					componentName, objectList.Items[0], errServing)
+			return checkIfKServeComponentIsEnabled(objectList.Items[0], "serving", componentName)
+		case KServeWithNIMComponent:
+			return checkIfKServeComponentIsEnabled(objectList.Items[0], "nim", componentName)
+		default:
+			val, _, err := unstructured.NestedString(objectList.Items[0].Object, fields...)
+			if err != nil {
+				return false, fmt.Errorf("failed to retrieve the component [%s] status from %+v",
+					componentName, objectList.Items[0])
 			}
-
-			kserve, _, errKserve := unstructured.NestedString(objectList.Items[0].Object, kserveFields...)
-			if errKserve != nil {
-				return false, fmt.Errorf("failed to retrieve the component [%s] status from %+v. %w",
-					componentName, objectList.Items[0], errKserve)
-			}
-
-			return (serving == "Managed" || serving == "Unmanaged") && kserve == "Managed", nil
+			return val == "Managed", nil
 		}
-
-		val, _, err := unstructured.NestedString(objectList.Items[0].Object, fields...)
-		if err != nil {
-			return false, fmt.Errorf("failed to retrieve the component [%s] status from %+v",
-				componentName, objectList.Items[0])
-		}
-		return val == "Managed", nil
 	} else {
 		return false, fmt.Errorf("there is no %s available in the cluster", GVK.DataScienceCluster.Kind)
 	}
+}
+
+func checkIfKServeComponentIsEnabled(obj unstructured.Unstructured, component string, componentName string) (bool, error) {
+	fields := []string{"spec", "components", "kserve", component, "managementState"}
+	kserveFields := []string{"spec", "components", "kserve", "managementState"}
+
+	comp, _, errComp := unstructured.NestedString(obj.Object, fields...)
+	if errComp != nil {
+		return false, fmt.Errorf("failed to retrieve the component [%s] status from %+v. %w",
+			componentName, obj, errComp)
+	}
+
+	kserve, _, errKserve := unstructured.NestedString(obj.Object, kserveFields...)
+	if errKserve != nil {
+		return false, fmt.Errorf("failed to retrieve the component [%s] status from %+v. %w",
+			componentName, obj, errKserve)
+	}
+
+	return (comp == "Managed" || comp == "Unmanaged") && kserve == "Managed", nil
 }
 
 // AuthorinoEnabledWhenOperatorNotMissing is a helper function to check if Authorino is enabled when the Operator is not missing.
